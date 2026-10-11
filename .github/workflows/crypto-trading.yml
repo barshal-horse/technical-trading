@@ -31,6 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # Install CPU-only PyTorch first to save build time and disk space
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -r requirements.txt
           pip install -r requirements-ml.txt
@@ -59,6 +60,8 @@ jobs:
         run: |
           set -e
           echo "Starting 24/7 Crypto Trading Daemon for ~345 minutes..."
+          # Run engine for 345 minutes (leaving 15m buffer before the next 6-hour cron run)
+          # Exit code 124 indicates timeout command reached duration, which is expected
           timeout 345m python engine.py || [ $? -eq 124 ]
           echo "Cycle concluded gracefully. Persisting state."
 

@@ -11,3 +11,7 @@ alpaca-py>=0.30
 # smartapi-python
 # growwapi
 # pyotp
+# transformers
+# torch
+# stable-baselines3
+# gymnasium

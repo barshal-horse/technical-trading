@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+data/*.sqlite3
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+data/*.log
+data/news_headlines.json
+models/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.log
+.freebuff/

@@ -1,0 +1,5 @@
+# Install after requirements.txt to enable FinBERT inference and offline PPO training.
+transformers>=4.45,<6
+torch>=2.3,<3
+stable-baselines3>=2.4,<3
+gymnasium>=1.0,<2

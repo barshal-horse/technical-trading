@@ -1,0 +1,13 @@
+# Core signal, storage, and dashboard requirements
+numpy>=1.26
+pandas>=2.1
+streamlit>=1.38
+plotly>=5.24
+streamlit-autorefresh>=1.0.1
+python-dotenv>=1.0
+alpaca-py>=0.30
+
+# Optional integrations; install only what is needed
+# smartapi-python
+# growwapi
+# pyotp

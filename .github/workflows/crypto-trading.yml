@@ -1,0 +1,73 @@
+name: 24/7 Autonomous Crypto Trading Engine
+
+on:
+  schedule:
+    # 4 runs per day (every 6 hours) at 00:15, 06:15, 12:15, 18:15 UTC
+    - cron: '15 0,6,12,18 * * *'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: crypto-trading-singleton
+  cancel-in-progress: false
+
+jobs:
+  run-trading-engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements.txt
+          pip install -r requirements-ml.txt
+
+      - name: Initialize storage directories
+        run: |
+          mkdir -p data logs
+
+      - name: Run 24/7 Multi-Symbol Trading Engine (6h cycle)
+        env:
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+          BROKER_ENV: "PAPER_ALPACA"
+          TRADING_ENABLED: "true"
+          TIMEFRAME_MINUTES: "5"
+          MAX_POSITIONS: "5"
+          MAX_CORRELATED_POSITIONS: "2"
+          SCAN_INTERVAL_MIN: "5"
+          MIN_SIGNAL_SCORE: "0.6"
+          KELLY_FRACTION: "0.25"
+          MAX_POSITION_PCT: "10.0"
+          ACCOUNT_EQUITY: "10000"
+          FINBERT_ENABLED: "true"
+          NEWS_SOURCE: "alpaca"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          set -e
+          echo "Starting 24/7 Crypto Trading Daemon for ~345 minutes..."
+          timeout 345m python engine.py || [ $? -eq 124 ]
+          echo "Cycle concluded gracefully. Persisting state."
+
+      - name: Upload Trade Database and Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trading-state-${{ github.run_id }}
+          path: |
+            data/trading.sqlite3
+            *.log
+          retention-days: 90

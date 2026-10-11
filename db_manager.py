@@ -83,9 +83,9 @@ def init_db() -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_live_candles_symbol_time ON live_candles(symbol, timestamp DESC);
         CREATE INDEX IF NOT EXISTS idx_trade_logs_symbol_time ON trade_logs(symbol, timestamp DESC);
-        INSERT OR IGNORE INTO bot_control(id,status,env,symbol,atr_mult)
-            VALUES(1,'PAUSED','PAPER_ALPACA','BTC/USD',1.0);
         """)
+        initial_status = 'RUNNING' if (os.getenv('TRADING_ENABLED', 'false').lower() == 'true' or os.getenv('CI') or os.getenv('GITHUB_ACTIONS')) else 'PAUSED'
+        conn.execute("INSERT OR IGNORE INTO bot_control(id,status,env,symbol,atr_mult) VALUES(1, ?, 'PAPER_ALPACA', 'BTC/USD', 1.0)", (initial_status,))
         control_columns = {row[1] for row in conn.execute("PRAGMA table_info(bot_control)")}
         for col, decl in (
             ("ml_gate_enabled", "INTEGER NOT NULL DEFAULT 0"),

@@ -40,6 +40,15 @@ jobs:
         run: |
           mkdir -p data logs
 
+      - name: Verify Broker Credentials
+        run: |
+          if [ -z "${{ secrets.ALPACA_API_KEY }}" ] || [ -z "${{ secrets.ALPACA_SECRET_KEY }}" ]; then
+            echo "::error::ALPACA_API_KEY or ALPACA_SECRET_KEY is not set in GitHub repository secrets!"
+            echo "Please go to https://github.com/barshal-horse/technical-trading/settings/secrets/actions and add your secrets."
+            exit 1
+          fi
+          echo "Alpaca credentials verified in repository secrets."
+
       - name: Run 24/7 Multi-Symbol Trading Engine (6h cycle)
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}

@@ -86,6 +86,13 @@ class MultiSymbolDaemon:
                 logger.info("FinBERT sentiment model loaded and cached")
             except Exception:
                 logger.exception("FinBERT warm-up failed; paper execution remains technical-only until sentiment is available")
+        auto_run = os.getenv("TRADING_ENABLED", "false").lower() == "true" or bool(os.getenv("CI")) or bool(os.getenv("GITHUB_ACTIONS"))
+        if auto_run:
+            ctrl = db_manager.get_control_settings()
+            if ctrl["status"] != "RUNNING":
+                db_manager.update_control_settings(status="RUNNING", env=ctrl["env"], symbol=ctrl["symbol"], atr_mult=ctrl["atr_mult"])
+                logger.info("Auto-enabled RUNNING status for automated/headless environment")
+
         logger.info("Multi-symbol trading daemon started; initial control state: %s", db_manager.get_control_settings())
         while not self._shutdown_event.is_set():
             control = db_manager.get_control_settings()
@@ -97,8 +104,12 @@ class MultiSymbolDaemon:
                 await self._stream_task
             except asyncio.CancelledError:
                 break
-            except Exception:
+            except Exception as exc:
                 if not self._shutdown_event.is_set():
+                    from broker_adapter import BrokerError
+                    if isinstance(exc, BrokerError) and ("ALPACA_API_KEY" in str(exc) or "credentials" in str(exc).lower()):
+                        logger.critical("Fatal broker credential error: %s", exc)
+                        raise SystemExit(1)
                     logger.exception("Market session failed; reconnecting after delay")
                     await asyncio.sleep(2.0)
         await self._cleanup()

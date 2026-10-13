@@ -13,3 +13,4 @@ __pycache__/
 venv/
 *.log
 .freebuff/
+data/cloud_state/

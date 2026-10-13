@@ -470,6 +470,8 @@ class AlpacaBroker(AbstractBroker):
                 positions.append({
                     "symbol": sym, "qty": float(p.qty), "side": str(p.side),
                     "market_value": float(p.market_value), "unrealized_pl": float(p.unrealized_pl),
+                    "avg_entry_price": float(getattr(p, "avg_entry_price", 0.0) or 0.0),
+                    "current_price": float(getattr(p, "current_price", 0.0) or 0.0),
                     "asset_class": getattr(p, "asset_class", "crypto" if is_crypto_symbol(sym) else "us_equity")
                 })
             return positions

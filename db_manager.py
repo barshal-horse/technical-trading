@@ -293,10 +293,12 @@ def get_active_crypto_positions() -> list[dict]:
         return [dict(row) for row in rows]
 
 
-def record_software_exit(log_id: int, exit_status: str, exit_price: float,
+def record_software_exit(log_id: int | None, exit_status: str, exit_price: float,
                          realized_pnl: float, exit_order_id: str | None = None) -> None:
     """Record software stop-loss or take-profit execution."""
     init_db()
+    if log_id is None:
+        return
     with _LOCK, _connect() as conn:
         conn.execute("""
             UPDATE trade_logs

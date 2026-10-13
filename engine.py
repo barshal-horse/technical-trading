@@ -60,7 +60,12 @@ class MultiSymbolDaemon:
         loop = asyncio.get_running_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
             try:
-                loop.add_signal_handler(sig, self._shutdown_event.set)
+                def _handle_shutdown():
+                    logger.info("Termination signal received; requesting graceful engine shutdown...")
+                    self._shutdown_event.set()
+                    if self._stream_task and not self._stream_task.done():
+                        self._stream_task.cancel()
+                loop.add_signal_handler(sig, _handle_shutdown)
             except NotImplementedError:
                 pass  # Windows doesn't support signal handlers in the same way
 
@@ -94,25 +99,29 @@ class MultiSymbolDaemon:
                 logger.info("Auto-enabled RUNNING status for automated/headless environment")
 
         logger.info("Multi-symbol trading daemon started; initial control state: %s", db_manager.get_control_settings())
-        while not self._shutdown_event.is_set():
-            control = db_manager.get_control_settings()
-            if control["status"] in {"PAUSED", "STOPPED"}:
-                await asyncio.sleep(1.0)
-                continue
-            try:
-                self._stream_task = asyncio.create_task(self._run_stream(control))
-                await self._stream_task
-            except asyncio.CancelledError:
-                break
-            except Exception as exc:
-                if not self._shutdown_event.is_set():
-                    from broker_adapter import BrokerError
-                    if isinstance(exc, BrokerError) and ("ALPACA_API_KEY" in str(exc) or "credentials" in str(exc).lower()):
-                        logger.critical("Fatal broker credential error: %s", exc)
-                        raise SystemExit(1)
-                    logger.exception("Market session failed; reconnecting after delay")
-                    await asyncio.sleep(2.0)
-        await self._cleanup()
+        try:
+            while not self._shutdown_event.is_set():
+                control = db_manager.get_control_settings()
+                if control["status"] in {"PAUSED", "STOPPED"}:
+                    await asyncio.sleep(1.0)
+                    continue
+                try:
+                    self._stream_task = asyncio.create_task(self._run_stream(control))
+                    await self._stream_task
+                except asyncio.CancelledError:
+                    break
+                except Exception as exc:
+                    if not self._shutdown_event.is_set():
+                        from broker_adapter import BrokerError
+                        if isinstance(exc, BrokerError) and ("ALPACA_API_KEY" in str(exc) or "credentials" in str(exc).lower()):
+                            logger.critical("Fatal broker credential error: %s", exc)
+                            raise SystemExit(1)
+                        logger.exception("Market session failed; reconnecting after delay")
+                        await asyncio.sleep(2.0)
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            logger.info("Engine received stop request; exiting main loop...")
+        finally:
+            await self._cleanup()
 
     async def _run_stream(self, initial_control: dict) -> None:
         env = initial_control["env"]
@@ -167,6 +176,70 @@ class MultiSymbolDaemon:
                     logger.info("Loaded %d closed historical candles for %s", len(historical), sym)
         except Exception:
             logger.exception("Historical warm-up unavailable; collecting live candles")
+
+        # Cross-Run Ephemeral Continuity: Query open broker crypto positions and adopt any unmonitored trades
+        try:
+            broker_positions = await broker.get_positions()
+            for b_pos in broker_positions:
+                b_sym = b_pos.get("symbol", "")
+                b_qty = float(b_pos.get("qty", 0.0))
+                if not is_crypto_symbol(b_sym) or b_qty <= 0:
+                    continue
+                norm_sym = normalize_crypto_symbol(b_sym)
+                if norm_sym not in self._active_crypto_positions:
+                    entry = float(b_pos.get("avg_entry_price", 0.0))
+                    curr_px = float(b_pos.get("current_price", 0.0))
+                    if entry <= 0:
+                        entry = curr_px or await broker.get_latest_price(norm_sym)
+
+                    atr = None
+                    if norm_sym in self.aggregators:
+                        df_agg = self.aggregators[norm_sym].dataframe()
+                        if len(df_agg) >= 14:
+                            df_ind = add_indicators(df_agg)
+                            last_atr = df_ind.iloc[-1].get("atr14")
+                            if pd.notna(last_atr) and float(last_atr) > 0:
+                                atr = float(last_atr)
+
+                    atr_mult = float(control.get("atr_mult", 1.0))
+                    if atr is not None and atr > 0:
+                        est_sl = round(entry - (1.5 * atr_mult * atr), 4 if entry > 10 else 6)
+                        est_tp = round(entry + (2.0 * atr_mult * atr), 4 if entry > 10 else 6)
+                    else:
+                        est_sl = round(entry * 0.985, 4 if entry > 10 else 6)
+                        est_tp = round(entry * 1.03, 4 if entry > 10 else 6)
+
+                    log_id = db_manager.log_trade(
+                        norm_sym, "BUY", entry, est_sl, est_tp,
+                        "ENTRY_FILLED:ADOPTED", 0.5,
+                        features={"adopted": True, "broker_qty": b_qty}
+                    )
+                    db_manager.update_trade_order_state(
+                        log_id, "ENTRY_FILLED:ADOPTED", filled_qty=b_qty, entry_fill_price=entry
+                    )
+                    self._active_crypto_positions[norm_sym] = {
+                        "log_id": log_id,
+                        "symbol": norm_sym,
+                        "entry": entry,
+                        "sl": est_sl,
+                        "tp": est_tp,
+                        "qty": b_qty,
+                        "action": "BUY"
+                    }
+                    logger.warning(
+                        "Adopted active broker crypto position for %s: qty=%.6f entry=%.4f sl=%.4f tp=%.4f",
+                        norm_sym, b_qty, entry, est_sl, est_tp
+                    )
+
+            # Immediately evaluate software exits on startup for all active crypto positions
+            for sym in list(self._active_crypto_positions.keys()):
+                try:
+                    px = await broker.get_latest_price(sym)
+                    await self._check_software_exits(broker, sym, px)
+                except Exception as e:
+                    logger.warning("Startup software exit check failed for %s: %s", sym, e)
+        except Exception as exc:
+            logger.exception("Failed to query and adopt broker positions on startup: %s", exc)
 
         stream = broker.stream_ticks(symbols)
         next_control_check = time.monotonic()
@@ -494,7 +567,7 @@ class MultiSymbolDaemon:
                     exit_qty = qty
                     try:
                         open_positions = await broker.get_positions()
-                        matching = next((p for p in open_positions if p["symbol"] == symbol), None)
+                        matching = next((p for p in open_positions if p["symbol"] == symbol or normalize_crypto_symbol(p["symbol"]) == normalize_crypto_symbol(symbol)), None)
                         if matching is not None:
                             exit_qty = float(matching.get("qty", 0.0))
                         else:

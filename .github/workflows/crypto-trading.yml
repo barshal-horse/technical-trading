@@ -11,12 +11,12 @@ on:
 
 concurrency:
   group: crypto-trading-singleton
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   run-trading-engine:
     runs-on: ubuntu-latest
-    timeout-minutes: 355
+    timeout-minutes: 350
 
     steps:
       - name: Checkout repository
@@ -68,10 +68,10 @@ jobs:
           PYTHONUNBUFFERED: "1"
         run: |
           set -e
-          echo "Starting 24/7 Crypto Trading Daemon for ~345 minutes..."
-          # Run engine for 345 minutes (leaving 15m buffer before the next 6-hour cron run)
+          echo "Starting 24/7 Crypto Trading Daemon for ~340 minutes..."
+          # Run engine for 340 minutes (leaving 20m buffer before the next 6-hour cron run)
           # Exit code 124 indicates timeout command reached duration, which is expected
-          timeout 345m python engine.py || [ $? -eq 124 ]
+          timeout 340m python engine.py || [ $? -eq 124 ]
           echo "Cycle concluded gracefully. Persisting state."
 
       - name: Upload Trade Database and Artifacts

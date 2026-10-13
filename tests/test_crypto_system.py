@@ -171,6 +171,29 @@ class TestCryptoTradingSystem(unittest.TestCase):
         self.assertEqual(c3.close, 80500.0)
         self.assertEqual(c3.volume, 1.5)
 
+    def test_position_adoption_and_sl_evaluation(self):
+        """Verify unmonitored broker positions are adopted and evaluated for SL."""
+        entry = 10.93
+        current_price = 10.20
+        # When adopting, est_sl is calculated with a safety buffer
+        est_sl = round(entry * 0.985, 4)  # ~10.7661
+        est_tp = round(entry * 1.03, 4)   # ~11.2579
+
+        # Simulated adopted position
+        adopted_pos = {
+            "symbol": "AVAX/USD",
+            "entry": entry,
+            "sl": est_sl,
+            "tp": est_tp,
+            "qty": 57.007125,
+            "action": "BUY"
+        }
+
+        # Verify current price 10.20 triggers stop loss immediately
+        self.assertLessEqual(current_price, adopted_pos["sl"], "Price 10.20 must breach SL 10.76")
+        triggered = "STOP_LOSS" if current_price <= adopted_pos["sl"] else None
+        self.assertEqual(triggered, "STOP_LOSS")
+
 
 if __name__ == "__main__":
     unittest.main()

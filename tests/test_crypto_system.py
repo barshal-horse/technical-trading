@@ -194,6 +194,14 @@ class TestCryptoTradingSystem(unittest.TestCase):
         triggered = "STOP_LOSS" if current_price <= adopted_pos["sl"] else None
         self.assertEqual(triggered, "STOP_LOSS")
 
+    def test_engine_imports_and_adoption_reference(self):
+        """Verify engine module imports and symbol normalization references."""
+        from engine import MultiSymbolDaemon, normalize_crypto_symbol, is_crypto_symbol
+        daemon = MultiSymbolDaemon()
+        self.assertIsNotNone(daemon)
+        self.assertEqual(normalize_crypto_symbol("BTCUSD"), "BTC/USD")
+        self.assertTrue(is_crypto_symbol("LINK/USD"))
+
 
 if __name__ == "__main__":
     unittest.main()

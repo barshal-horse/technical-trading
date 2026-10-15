@@ -19,7 +19,7 @@ import pandas as pd
 import db_manager
 from broker_adapter import (BrokerError, TradingDisabledError,
                             UnsupportedProtectionError, create_broker_from_env,
-                            is_crypto_symbol)
+                            is_crypto_symbol, normalize_crypto_symbol)
 from ml_enhancer import RLSignalFilter, get_market_sentiment, warmup_market_sentiment
 from risk_manager import PortfolioRiskManager, load_risk_params_from_db
 from signal_engine import CandleAggregator, add_indicators, evaluate_break_and_retest_signal

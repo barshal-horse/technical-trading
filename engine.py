@@ -355,16 +355,20 @@ class MultiSymbolDaemon:
             return
         risk_params = load_risk_params_from_db()
         risk_params.update({
-            "max_positions": control.get("max_positions", 5),
-            "max_correlated_positions": control.get("max_correlated_positions", 2),
-            "min_signal_score": control.get("min_signal_score", 0.6),
-            "kelly_fraction": control.get("kelly_fraction", 0.25),
-            "max_position_pct": control.get("max_position_pct", 10.0),
+            "max_positions": int(os.getenv("MAX_POSITIONS", control.get("max_positions", 15))),
+            "max_correlated_positions": int(os.getenv("MAX_CORRELATED_POSITIONS", control.get("max_correlated_positions", 15))),
+            "min_signal_score": float(os.getenv("MIN_SIGNAL_SCORE", control.get("min_signal_score", 0.55))),
+            "kelly_fraction": float(os.getenv("KELLY_FRACTION", control.get("kelly_fraction", 0.30))),
+            "max_position_pct": float(os.getenv("MAX_POSITION_PCT", control.get("max_position_pct", 15.0))),
+            "max_portfolio_heat_pct": float(os.getenv("MAX_PORTFOLIO_HEAT_PCT", 10.0)),
+            "min_cash_buffer_pct": float(os.getenv("MIN_CASH_BUFFER_PCT", 10.0)),
         })
         self.risk_manager.max_positions = risk_params["max_positions"]
         self.risk_manager.max_correlated = risk_params["max_correlated_positions"]
         self.risk_manager.kelly_fraction = risk_params["kelly_fraction"]
         self.risk_manager.max_position_pct = risk_params["max_position_pct"]
+        self.risk_manager.max_portfolio_heat_pct = risk_params["max_portfolio_heat_pct"]
+        self.risk_manager.min_cash_buffer_pct = risk_params["min_cash_buffer_pct"]
 
         try:
             positions = await broker.get_positions()

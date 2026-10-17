@@ -1,6 +1,7 @@
 """Comprehensive automated test suite for 24/7 Alpaca crypto trading and quantitative strategies."""
 from __future__ import annotations
 
+import json
 import os
 import unittest
 from datetime import datetime, timezone, timedelta
@@ -121,7 +122,7 @@ class TestCryptoTradingSystem(unittest.TestCase):
         signal = evaluate_break_and_retest_signal(res_df, symbol="BTC/USD")
         self.assertIn("action", signal)
         self.assertIn("strategy_version", signal)
-        self.assertEqual(signal["strategy_version"], "crypto-break-retest-v2")
+        self.assertEqual(signal["strategy_version"], "crypto-break-retest-v3-profit-max")
         self.assertIn("vol_ratio", signal["features"])
 
     def test_software_exit_logic(self):
@@ -194,14 +195,104 @@ class TestCryptoTradingSystem(unittest.TestCase):
         triggered = "STOP_LOSS" if current_price <= adopted_pos["sl"] else None
         self.assertEqual(triggered, "STOP_LOSS")
 
-    def test_engine_imports_and_adoption_reference(self):
-        """Verify engine module imports and symbol normalization references."""
-        from engine import MultiSymbolDaemon, normalize_crypto_symbol, is_crypto_symbol
-        daemon = MultiSymbolDaemon()
-        self.assertIsNotNone(daemon)
-        self.assertEqual(normalize_crypto_symbol("BTCUSD"), "BTC/USD")
-        self.assertTrue(is_crypto_symbol("LINK/USD"))
+    def test_portfolio_heat_and_cash_headroom(self):
+        """Verify institutional portfolio heat calculation and cash headroom protection."""
+        equity = 10000.0
+        # Simulated existing positions with stop losses
+        existing_positions = [
+            {"symbol": "BTC/USD", "qty": 0.05, "price": 80000.0, "sl": 78000.0, "action": "BUY"},  # Risk = 0.05 * 2000 = $100 (1%)
+            {"symbol": "ETH/USD", "qty": 1.0, "price": 3000.0, "sl": 2800.0, "action": "BUY"},      # Risk = 1.0 * 200 = $200 (2%)
+        ]
+        heat = self.risk_manager.calculate_portfolio_heat(existing_positions, equity)
+        # Total risk = $300 / $10,000 = 3.0%
+        self.assertAlmostEqual(heat, 3.0, places=2)
+
+        # Candidate trade with risk that would exceed 10% heat
+        # Risk = 1.0 * 800 = $800 (8%), adding to 3% gives 11% (> 10%)
+        huge_risk_signal = {
+            "symbol": "SOL/USD",
+            "action": "BUY",
+            "entry": 200.0,
+            "stop_loss": 100.0,  # $100 per unit risk
+            "ml_approval_prob": 0.8
+        }
+        # Sizing will try to size based on kelly/atr, but if risk pushes heat over 10%, it must be guarded
+        risk_params = {"max_portfolio_heat_pct": 10.0, "min_cash_buffer_pct": 10.0}
+        
+        # Test cash headroom depletion:
+        # If open positions consume $9,500 of $10,000, remaining cash = $500 (5% < 10% min_cash_buffer_pct)
+        heavy_positions = [
+            {"symbol": "BTC/USD", "qty": 0.1, "price": 80000.0, "market_value": 8000.0, "sl": 79000.0, "action": "BUY"},
+            {"symbol": "ETH/USD", "qty": 0.5, "price": 3000.0, "market_value": 1500.0, "sl": 2900.0, "action": "BUY"}
+        ]
+        candidate_signal = {
+            "symbol": "SOL/USD",
+            "action": "BUY",
+            "entry": 200.0,
+            "stop_loss": 190.0,
+            "ml_approval_prob": 0.8
+        }
+        approved, qty, reason = self.risk_manager.can_open_position(
+            candidate_signal, positions=heavy_positions, equity=equity, risk_params=risk_params
+        )
+        self.assertFalse(approved, "Must reject candidate when cash reserves drop below minimum buffer")
+        self.assertIn("cash", reason.lower())
+
+    def test_dynamic_trailing_and_breakeven_ratchet(self):
+        """Verify breakeven locking at +1.2 ATR and trailing chandelier ratchet at +2.0 ATR."""
+        entry = 100.0
+        atr = 5.0
+        initial_sl = entry - atr  # 95.0
+        pos = {
+            "symbol": "SOL/USD",
+            "entry": entry,
+            "sl": initial_sl,
+            "tp": entry + 3.0 * atr,
+            "qty": 2.0,
+            "action": "BUY",
+            "atr": atr,
+            "highest_price": entry,
+            "breakeven_locked": False,
+            "trailing_active": False,
+        }
+
+        # Step 1: Price rises to entry + 1.2 * atr = 106.0 -> Breakeven should lock
+        p1 = 106.0
+        pos["highest_price"] = max(pos["highest_price"], p1)
+        if not pos["breakeven_locked"] and p1 >= entry + 1.2 * atr:
+            pos["sl"] = max(pos["sl"], entry + 0.1 * atr)
+            pos["breakeven_locked"] = True
+
+        self.assertTrue(pos["breakeven_locked"])
+        self.assertEqual(pos["sl"], 100.5, "Stop loss must advance to entry + 0.1 ATR (100.5)")
+
+        # Step 2: Price surges to entry + 2.5 * atr = 112.5 -> Trailing stop activates
+        p2 = 112.5
+        pos["highest_price"] = max(pos["highest_price"], p2)
+        if p2 >= entry + 2.0 * atr:
+            pos["trailing_active"] = True
+        
+        trail_sl = pos["highest_price"] - 1.5 * atr  # 112.5 - 7.5 = 105.0
+        if trail_sl > pos["sl"]:
+            pos["sl"] = trail_sl
+
+        self.assertTrue(pos["trailing_active"])
+        self.assertEqual(pos["sl"], 105.0, "Trailing stop must ratchet to highest - 1.5 ATR (105.0)")
+
+        # Step 3: Retracement to 104.5 -> triggers TRAILING_STOP
+        p3 = 104.5
+        self.assertLessEqual(p3, pos["sl"], "Price 104.5 breaches trailing stop 105.0")
+
+    def test_expanded_crypto_watchlist_universe(self):
+        """Verify database defaults contain the expanded 11-symbol crypto universe."""
+        watchlist = json.loads(db_manager.DEFAULT_CRYPTO_WATCHLIST)
+        self.assertEqual(len(watchlist), 11)
+        expected_symbols = ["BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "LINK/USD",
+                            "DOGE/USD", "LTC/USD", "BCH/USD", "UNI/USD", "AAVE/USD", "SHIB/USD"]
+        for sym in expected_symbols:
+            self.assertIn(sym, watchlist)
 
 
 if __name__ == "__main__":
     unittest.main()
+

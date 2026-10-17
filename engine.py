@@ -132,7 +132,10 @@ class MultiSymbolDaemon:
         control = db_manager.get_control_settings()
         symbols = [s.strip().upper() for s in json.loads(control.get("watchlist_json", "[]")) if s.strip()]
         if not symbols:
-            symbols = ["BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD", "AVAX/USD", "LINK/USD"]
+            symbols = [
+                "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "LINK/USD",
+                "DOGE/USD", "LTC/USD", "BCH/USD", "UNI/USD", "AAVE/USD", "SHIB/USD"
+            ]
         scan_interval = control.get("scan_interval_min", 5)
         logger.info("Starting multi-symbol stream for %d symbols: %s", len(symbols), symbols)
 
@@ -140,14 +143,20 @@ class MultiSymbolDaemon:
         self._active_crypto_positions = {}
         for row in db_manager.get_active_crypto_positions():
             sym = row["symbol"]
+            entry = row["price"] or row["entry_fill_price"] or 0.0
+            sl = row["sl"]
             self._active_crypto_positions[sym] = {
                 "log_id": row["id"],
                 "symbol": sym,
-                "entry": row["price"] or row["entry_fill_price"] or 0.0,
-                "sl": row["sl"],
+                "entry": entry,
+                "sl": sl,
                 "tp": row["tp"],
                 "qty": row["filled_qty"] or float(os.getenv("ORDER_QUANTITY", "1")),
-                "action": row["action"]
+                "action": row["action"],
+                "atr": abs(entry - sl) if (sl is not None and entry != sl) else (entry * 0.015),
+                "highest_price": entry,
+                "breakeven_locked": False,
+                "trailing_active": False,
             }
         if self._active_crypto_positions:
             logger.info("Loaded %d active crypto positions for software exit monitoring: %s",
@@ -224,7 +233,11 @@ class MultiSymbolDaemon:
                         "sl": est_sl,
                         "tp": est_tp,
                         "qty": b_qty,
-                        "action": "BUY"
+                        "action": "BUY",
+                        "atr": atr or abs(entry - est_sl),
+                        "highest_price": max(entry, curr_px),
+                        "breakeven_locked": False,
+                        "trailing_active": False,
                     }
                     logger.warning(
                         "Adopted active broker crypto position for %s: qty=%.6f entry=%.4f sl=%.4f tp=%.4f",
@@ -419,7 +432,8 @@ class MultiSymbolDaemon:
         candidates.sort(key=lambda s: s["composite_score"], reverse=True)
 
         equity = await self._get_equity(broker)
-        for signal in candidates[:risk_params["max_positions"]]:
+        # Dynamic Risk Headroom: evaluate top candidates against live portfolio heat and cash reserves
+        for signal in candidates:
             approved, qty, reason = self.risk_manager.can_open_position(
                 signal, positions, equity=equity, risk_params=risk_params)
             if not approved:
@@ -436,14 +450,12 @@ class MultiSymbolDaemon:
                 signal["take_profit"], "SIGNAL", signal.get("ml_approval_prob"),
                 {**signal.get("features", {}), **signal.get("market_features", {})})
             self.pending_outcomes[signal["symbol"]].append(
-(log_id, signal["action"], signal["entry"], self.closed_counts[signal["symbol"]]))
+                (log_id, signal["action"], signal["entry"], self.closed_counts[signal["symbol"]]))
 
             def _round_price(price: float) -> float:
                 return round(price, 2)
             
             # Validate and adjust SL/TP to meet broker requirements
-            # Alpaca requires SL/TP to be at least 0.01 away from base_price (market price at submission)
-            # Since base_price can differ from latest trade price, add conservative buffer
             fallback_price = signal["entry"]
             latest_price = fallback_price
             try:
@@ -462,7 +474,6 @@ class MultiSymbolDaemon:
             min_distance = max(0.01, latest_price * 0.001)
             
             if signal["action"] == "BUY":
-                # For BUY: stop_loss must be <= base_price - min_distance, take_profit >= base_price + min_distance
                 min_sl = latest_price - min_distance
                 max_tp = latest_price + min_distance
                 if sl > min_sl:
@@ -472,7 +483,6 @@ class MultiSymbolDaemon:
                     tp = max_tp
                     logger.warning("Adjusted take_profit for %s BUY: %.4f -> %.4f (min_distance=%.4f)", signal["symbol"], signal["take_profit"], tp, min_distance)
             else:  # SELL
-                # For SELL: stop_loss must be >= base_price + min_distance, take_profit <= base_price - min_distance
                 min_sl = latest_price + min_distance
                 max_tp = latest_price - min_distance
                 logger.debug("Scanner: %s SELL min_sl=%.4f (latest+%.4f), signal_sl=%.4f, min_tp=%.4f, signal_tp=%.4f", 
@@ -484,8 +494,7 @@ class MultiSymbolDaemon:
                     tp = max_tp
                     logger.warning("Adjusted take_profit for %s SELL: %.4f -> %.4f (min_distance=%.4f)", signal["symbol"], signal["take_profit"], tp, min_distance)
             
-            # Also ensure SL/TP respect signal's ATR-based logic (don't move them closer than signal intended)
-            # Signal SL for SELL is entry + atr_mult*atr; for BUY is entry - atr_mult*atr
+            # Also ensure SL/TP respect signal's ATR-based logic
             atr_mult = float(control.get("atr_mult", 1.0))
             atr = signal.get("features", {}).get("atr14", 0)
             if atr and atr > 0:
@@ -514,6 +523,9 @@ class MultiSymbolDaemon:
                 is_crypto = is_crypto_symbol(signal["symbol"])
                 if is_crypto:
                     result = await broker.place_order(signal["symbol"], signal["action"], qty, order_type="market")
+                    atr_val = signal.get("features", {}).get("atr14", 0.0)
+                    if not atr_val or atr_val <= 0:
+                        atr_val = abs(signal["entry"] - sl) if sl else signal["entry"] * 0.02
                     self._active_crypto_positions[signal["symbol"]] = {
                         "log_id": log_id,
                         "symbol": signal["symbol"],
@@ -521,7 +533,11 @@ class MultiSymbolDaemon:
                         "sl": sl,
                         "tp": tp,
                         "qty": qty,
-                        "action": signal["action"]
+                        "action": signal["action"],
+                        "atr": atr_val,
+                        "highest_price": signal["entry"],
+                        "breakeven_locked": False,
+                        "trailing_active": False,
                     }
                 else:
                     result = await broker.place_order(signal["symbol"], signal["action"], qty,
@@ -541,7 +557,7 @@ class MultiSymbolDaemon:
                 logger.exception("Unexpected scanner order routing error")
 
     async def _check_software_exits(self, broker, symbol: str, current_price: float) -> None:
-        """Evaluate open software-managed crypto positions for Stop Loss or Take Profit."""
+        """Evaluate open software-managed crypto positions for Dynamic Trailing Stop, Breakeven Lock, Stop Loss, or Take Profit."""
         pos = self._active_crypto_positions.get(symbol)
         if not pos:
             return
@@ -550,16 +566,52 @@ class MultiSymbolDaemon:
         qty = pos.get("qty", 0.0)
         entry = pos.get("entry", current_price)
         log_id = pos.get("log_id")
+        atr = pos.get("atr", 0.0)
+        if not atr or atr <= 0:
+            atr = abs(entry - sl) if sl else entry * 0.02
 
         if pos.get("action") == "BUY":
+            # Track highest high watermark
+            highest_price = max(pos.get("highest_price", entry), current_price)
+            pos["highest_price"] = highest_price
+
+            # 1. Breakeven Lock: Once price reaches entry + 1.2 * atr, lock SL to entry + 0.1 * atr
+            if not pos.get("breakeven_locked", False) and current_price >= entry + 1.2 * atr:
+                new_sl = max(sl if sl is not None else 0.0, entry + 0.1 * atr)
+                pos["sl"] = new_sl
+                pos["breakeven_locked"] = True
+                logger.warning("BREAKEVEN LOCKED for %s: price=%.4f entry=%.4f locked_sl=%.4f (+1.2 ATR achieved)",
+                               symbol, current_price, entry, new_sl)
+
+            # 2. Dynamic Trailing Chandelier Stop: When price expands >= 2.0 * atr, trail at highest - 1.5 * atr
+            if current_price >= entry + 2.0 * atr:
+                pos["trailing_active"] = True
+
+            if pos.get("trailing_active", False):
+                trail_sl = highest_price - 1.5 * atr
+                if sl is None or trail_sl > pos.get("sl", 0.0):
+                    pos["sl"] = trail_sl
+                    logger.warning("TRAILING STOP RATCHETED for %s: high=%.4f trail_sl=%.4f (price=%.4f)",
+                                   symbol, highest_price, trail_sl, current_price)
+
+            # 3. Climax Take Profit: If price expands >= 4.5 * atr, lock in parabolic extension
+            climax_tp = entry + 4.5 * atr
+            if tp is None or climax_tp < tp:
+                pos["tp"] = climax_tp
+
             triggered_reason = None
-            if sl is not None and current_price <= sl:
-                triggered_reason = "STOP_LOSS"
-            elif tp is not None and current_price >= tp:
+            if pos.get("sl") is not None and current_price <= pos["sl"]:
+                if pos.get("trailing_active"):
+                    triggered_reason = "TRAILING_STOP"
+                elif pos.get("breakeven_locked"):
+                    triggered_reason = "BREAKEVEN_STOP"
+                else:
+                    triggered_reason = "STOP_LOSS"
+            elif pos.get("tp") is not None and current_price >= pos["tp"]:
                 triggered_reason = "TAKE_PROFIT"
 
             if triggered_reason:
-                target_price = tp if triggered_reason == "TAKE_PROFIT" else sl
+                target_price = pos.get("tp") if triggered_reason == "TAKE_PROFIT" else pos.get("sl")
                 logger.info("SOFTWARE %s TRIGGERED for %s: price=%.4f (entry=%.4f, target=%.4f)",
                             triggered_reason, symbol, current_price, entry, target_price)
                 try:

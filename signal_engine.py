@@ -118,7 +118,7 @@ def rejection_ratios(candle: Any) -> tuple[float, float]:
 
 def evaluate_break_and_retest_signal(candle_df: pd.DataFrame, symbol: str = "UNKNOWN",
                                      risk_mode: str = "entry_atr") -> dict[str, Any]:
-    """Return a BUY/SELL/FLAT signal. Stop modes: entry_atr or swing_atr."""
+    """Return a high-probability BUY/SELL/FLAT signal with dynamic profit potential."""
     if risk_mode not in ("entry_atr", "swing_atr"):
         raise ValueError("risk_mode must be 'entry_atr' or 'swing_atr'")
     empty = {"action": "FLAT", "symbol": symbol, "entry": None, "stop_loss": None,
@@ -136,33 +136,40 @@ def evaluate_break_and_retest_signal(candle_df: pd.DataFrame, symbol: str = "UNK
 
     is_crypto = "/" in str(symbol) or str(symbol).endswith("USD") or str(symbol).endswith("USDT")
     low_ratio, high_ratio = rejection_ratios(curr)
-    near_long = abs(float(curr.low) - float(curr.sma20)) <= 0.5 * atr
-    near_short = abs(float(curr.high) - float(curr.sma20)) <= 0.5 * atr
+    
+    # [FDE-WHY]: Check proximity to both SMA20 and EMA20 for responsive retest detection
+    ema20_val = float(curr.ema20) if pd.notna(curr.get("ema20")) else float(curr.sma20)
+    near_long = (abs(float(curr.low) - float(curr.sma20)) <= 0.8 * atr) or (abs(float(curr.low) - ema20_val) <= 0.6 * atr)
+    near_short = (abs(float(curr.high) - float(curr.sma20)) <= 0.8 * atr) or (abs(float(curr.high) - ema20_val) <= 0.6 * atr)
 
-    # RSI momentum bounds
+    # RSI momentum bounds (broadened for strong momentum trends)
     rsi_val = float(curr.rsi14) if pd.notna(curr.get("rsi14")) else 50.0
-    rsi_long_ok = 42.0 <= rsi_val <= 75.0
-    rsi_short_ok = 25.0 <= rsi_val <= 58.0
+    rsi_long_ok = 38.0 <= rsi_val <= 78.0
+    rsi_short_ok = 22.0 <= rsi_val <= 62.0
 
-    # Trend filter: if SMA50/EMA50 available, align direction with intermediate trend
+    # Multi-timeframe trend filter: SMA50 / EMA50 alignment
     sma50_val = float(curr.sma50) if pd.notna(curr.get("sma50")) else None
     trend_up = (entry >= sma50_val) if sma50_val is not None else True
     trend_down = (entry <= sma50_val) if sma50_val is not None else True
 
-    # Volume filter
+    # Volume filter (liquid breakouts)
     vol_ratio = float(curr.get("vol_ratio", 1.0)) if pd.notna(curr.get("vol_ratio")) else 1.0
-    vol_ok = vol_ratio >= 0.8  # Ensure not dead liquidity
+    vol_ok = vol_ratio >= 0.70
 
-    long_ok = entry > float(curr.sma20) and near_long and (low_ratio >= 0.618 or entry > float(prev.high)) and rsi_long_ok and trend_up and vol_ok
+    # Breakout or wick rejection confirmation
+    confirmation_long = (low_ratio >= 0.40) or (entry > float(prev.high)) or (float(curr.close) > float(curr.open) and entry > ema20_val)
+    confirmation_short = (high_ratio >= 0.40) or (entry < float(prev.low)) or (float(curr.close) < float(curr.open) and entry < ema20_val)
+
+    long_ok = entry > float(curr.sma20) and near_long and confirmation_long and rsi_long_ok and trend_up and vol_ok
     # Crypto spot does not support short selling: suppress short entries for crypto
-    short_ok = (not is_crypto) and entry < float(curr.sma20) and near_short and (high_ratio >= 0.618 or entry < float(prev.low)) and rsi_short_ok and trend_down and vol_ok
+    short_ok = (not is_crypto) and entry < float(curr.sma20) and near_short and confirmation_short and rsi_short_ok and trend_down and vol_ok
 
     action = "BUY" if long_ok else "SELL" if short_ok else "FLAT"
     stamp = curr.get("timestamp", curr.get("Timestamp"))
     stamp = stamp.isoformat() if hasattr(stamp, "isoformat") else str(stamp) if stamp is not None else None
     result: dict[str, Any] = {"action": action, "symbol": symbol, "entry": entry if action != "FLAT" else None,
                               "stop_loss": None, "take_profit": None, "timestamp": stamp,
-                              "strategy_version": "crypto-break-retest-v2" if is_crypto else "break-retest-v1",
+                              "strategy_version": "crypto-break-retest-v3-profit-max" if is_crypto else "break-retest-v2",
                               "reason": "conditions met" if action != "FLAT" else "no setup",
                               "features": {"sma20": float(curr.sma20), "sma50": _finite(curr.sma50),
                                            "sma200": _finite(curr.sma200), "atr14": atr,
@@ -171,12 +178,12 @@ def evaluate_break_and_retest_signal(candle_df: pd.DataFrame, symbol: str = "UNK
                                            "lower_wick_ratio": low_ratio, "upper_wick_ratio": high_ratio,
                                            "vol_ratio": vol_ratio}}
     if action == "BUY":
-        sl = (float(curr.low) - atr) if risk_mode == "swing_atr" else (entry - atr)
-        # Asymmetric risk/reward: 2.0x ATR profit target
-        result.update(stop_loss=sl, take_profit=entry + 2 * atr)
+        sl = (float(curr.low) - atr) if risk_mode == "swing_atr" else (entry - 1.2 * atr)
+        # Asymmetric risk/reward: 2.5x ATR initial profit target with dynamic trailing stop in execution daemon
+        result.update(stop_loss=sl, take_profit=entry + 2.5 * atr)
     elif action == "SELL":
-        sl = (float(curr.high) + atr) if risk_mode == "swing_atr" else (entry + atr)
-        result.update(stop_loss=sl, take_profit=entry - 2 * atr)
+        sl = (float(curr.high) + atr) if risk_mode == "swing_atr" else (entry + 1.2 * atr)
+        result.update(stop_loss=sl, take_profit=entry - 2.5 * atr)
     return result
 
 

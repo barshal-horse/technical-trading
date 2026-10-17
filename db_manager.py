@@ -21,7 +21,8 @@ _LOCK = threading.RLock()
 _INITIALIZED = False
 
 DEFAULT_CRYPTO_WATCHLIST = json.dumps([
-    "BTC/USD", "ETH/USD", "SOL/USD", "DOGE/USD", "AVAX/USD", "LINK/USD"
+    "BTC/USD", "ETH/USD", "SOL/USD", "AVAX/USD", "LINK/USD",
+    "DOGE/USD", "LTC/USD", "BCH/USD", "UNI/USD", "AAVE/USD", "SHIB/USD"
 ])
 DEFAULT_STOCK_WATCHLIST = json.dumps([
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
@@ -90,13 +91,13 @@ def init_db() -> None:
         for col, decl in (
             ("ml_gate_enabled", "INTEGER NOT NULL DEFAULT 0"),
             ("watchlist_json", f"TEXT NOT NULL DEFAULT '{DEFAULT_WATCHLIST}'"),
-            ("max_positions", "INTEGER NOT NULL DEFAULT 5"),
-            ("max_correlated_positions", "INTEGER NOT NULL DEFAULT 2"),
+            ("max_positions", "INTEGER NOT NULL DEFAULT 15"),
+            ("max_correlated_positions", "INTEGER NOT NULL DEFAULT 15"),
             ("scan_enabled", "INTEGER NOT NULL DEFAULT 1"),
             ("scan_interval_min", "INTEGER NOT NULL DEFAULT 5"),
-            ("min_signal_score", "REAL NOT NULL DEFAULT 0.6"),
+            ("min_signal_score", "REAL NOT NULL DEFAULT 0.55"),
             ("kelly_fraction", "REAL NOT NULL DEFAULT 0.25"),
-            ("max_position_pct", "REAL NOT NULL DEFAULT 10.0"),
+            ("max_position_pct", "REAL NOT NULL DEFAULT 15.0"),
         ):
             if col not in control_columns:
                 conn.execute(f"ALTER TABLE bot_control ADD COLUMN {col} {decl}")
@@ -129,9 +130,9 @@ def get_control_settings() -> dict:
             return dict(row)
         return {
             "id": 1, "status": "PAUSED", "env": "PAPER_ALPACA", "symbol": "AAPL", "atr_mult": 1.0,
-            "ml_gate_enabled": 0, "watchlist_json": DEFAULT_WATCHLIST, "max_positions": 5,
-            "max_correlated_positions": 2, "scan_enabled": 1, "scan_interval_min": 5,
-            "min_signal_score": 0.6, "kelly_fraction": 0.25, "max_position_pct": 10.0
+            "ml_gate_enabled": 0, "watchlist_json": DEFAULT_WATCHLIST, "max_positions": 15,
+            "max_correlated_positions": 15, "scan_enabled": 1, "scan_interval_min": 5,
+            "min_signal_score": 0.55, "kelly_fraction": 0.25, "max_position_pct": 15.0
         }
 
 

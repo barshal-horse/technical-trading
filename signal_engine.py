@@ -137,32 +137,51 @@ def evaluate_break_and_retest_signal(candle_df: pd.DataFrame, symbol: str = "UNK
     is_crypto = "/" in str(symbol) or str(symbol).endswith("USD") or str(symbol).endswith("USDT")
     low_ratio, high_ratio = rejection_ratios(curr)
     
-    # [FDE-WHY]: Check proximity to both SMA20 and EMA20 for responsive retest detection
+    # [FDE-WHY]: Proximity to SMA20 or EMA20 for pullback retest, or momentum breakout above previous high
     ema20_val = float(curr.ema20) if pd.notna(curr.get("ema20")) else float(curr.sma20)
-    near_long = (abs(float(curr.low) - float(curr.sma20)) <= 0.8 * atr) or (abs(float(curr.low) - ema20_val) <= 0.6 * atr)
-    near_short = (abs(float(curr.high) - float(curr.sma20)) <= 0.8 * atr) or (abs(float(curr.high) - ema20_val) <= 0.6 * atr)
+    near_long = (
+        (abs(float(curr.low) - float(curr.sma20)) <= 1.5 * atr) or
+        (abs(float(curr.low) - ema20_val) <= 1.2 * atr) or
+        (entry >= float(prev.high))
+    )
+    near_short = (
+        (abs(float(curr.high) - float(curr.sma20)) <= 1.5 * atr) or
+        (abs(float(curr.high) - ema20_val) <= 1.2 * atr) or
+        (entry <= float(prev.low))
+    )
 
     # RSI momentum bounds (broadened for strong momentum trends)
     rsi_val = float(curr.rsi14) if pd.notna(curr.get("rsi14")) else 50.0
-    rsi_long_ok = 38.0 <= rsi_val <= 78.0
-    rsi_short_ok = 22.0 <= rsi_val <= 62.0
+    rsi_long_ok = 35.0 <= rsi_val <= 80.0
+    rsi_short_ok = 20.0 <= rsi_val <= 65.0
 
-    # Multi-timeframe trend filter: SMA50 / EMA50 alignment
+    # Multi-timeframe trend filter: SMA20/SMA50 or EMA20/EMA50 alignment
     sma50_val = float(curr.sma50) if pd.notna(curr.get("sma50")) else None
-    trend_up = (entry >= sma50_val) if sma50_val is not None else True
-    trend_down = (entry <= sma50_val) if sma50_val is not None else True
+    trend_up = (entry >= float(curr.sma20)) or (ema20_val >= float(curr.ema50) if pd.notna(curr.get("ema50")) else True)
+    trend_down = (entry <= float(curr.sma20)) or (ema20_val <= float(curr.ema50) if pd.notna(curr.get("ema50")) else True)
 
-    # Volume filter (liquid breakouts)
+    # Volume filter: if data provider streams volume, verify minimum activity; if zero/unreported, default to True
+    has_volume_data = (float(curr.get("volume", 0.0) or 0.0) > 0.0)
     vol_ratio = float(curr.get("vol_ratio", 1.0)) if pd.notna(curr.get("vol_ratio")) else 1.0
-    vol_ok = vol_ratio >= 0.70
+    vol_ok = (vol_ratio >= 0.15) if has_volume_data else True
 
     # Breakout or wick rejection confirmation
-    confirmation_long = (low_ratio >= 0.40) or (entry > float(prev.high)) or (float(curr.close) > float(curr.open) and entry > ema20_val)
-    confirmation_short = (high_ratio >= 0.40) or (entry < float(prev.low)) or (float(curr.close) < float(curr.open) and entry < ema20_val)
+    confirmation_long = (
+        (low_ratio >= 0.25) or
+        (entry >= float(prev.high)) or
+        (float(curr.close) >= float(curr.open)) or
+        (entry >= ema20_val)
+    )
+    confirmation_short = (
+        (high_ratio >= 0.25) or
+        (entry <= float(prev.low)) or
+        (float(curr.close) <= float(curr.open)) or
+        (entry <= ema20_val)
+    )
 
-    long_ok = entry > float(curr.sma20) and near_long and confirmation_long and rsi_long_ok and trend_up and vol_ok
+    long_ok = trend_up and near_long and confirmation_long and rsi_long_ok and vol_ok
     # Crypto spot does not support short selling: suppress short entries for crypto
-    short_ok = (not is_crypto) and entry < float(curr.sma20) and near_short and confirmation_short and rsi_short_ok and trend_down and vol_ok
+    short_ok = (not is_crypto) and trend_down and near_short and confirmation_short and rsi_short_ok and vol_ok
 
     action = "BUY" if long_ok else "SELL" if short_ok else "FLAT"
     stamp = curr.get("timestamp", curr.get("Timestamp"))

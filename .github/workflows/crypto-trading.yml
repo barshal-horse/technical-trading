@@ -1,12 +1,12 @@
 name: 24/7 Autonomous Crypto Trading Engine
 
 on:
-  schedule:
-    # 4 runs per day (every 6 hours) at 00:15, 06:15, 12:15, 18:15 UTC
-    - cron: '15 0,6,12,18 * * *'
-  push:
-    branches:
-      - main
+  # [STOPPED]: Automated schedule and push triggers disabled by user request.
+  # schedule:
+  #   - cron: '15 0,6,12,18 * * *'
+  # push:
+  #   branches:
+  #     - main
   workflow_dispatch:
 
 concurrency:
@@ -54,7 +54,7 @@ jobs:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           BROKER_ENV: "PAPER_ALPACA"
-          TRADING_ENABLED: "true"
+          TRADING_ENABLED: "false"
           TIMEFRAME_MINUTES: "5"
           MAX_POSITIONS: "15"
           MAX_CORRELATED_POSITIONS: "15"
